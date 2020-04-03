@@ -35,6 +35,7 @@
 #include <drivers/drv_adc.h>
 #include <drivers/drv_hrt.h>
 #include <px4_arch/adc.h>
+#include <px4_platform_common/sem.hpp>
 
 #include <nuttx/analog/adc.h>
 #include <kinetis.h>
@@ -76,8 +77,12 @@
 #define rCLM1(adc)  REG(adc, KINETIS_ADC_CLM1_OFFSET) /* ADC minus-side general calibration value register */
 #define rCLM0(adc)  REG(adc, KINETIS_ADC_CLM0_OFFSET) /* ADC minus-side general calibration value register */
 
+px4_sem_t adc_lock;
+
 int px4_arch_adc_init(uint32_t base_address)
 {
+	px4_sem_init(&adc_lock, 0, 1);
+
 	/* Input is Buss Clock 56 Mhz We will use /8 for 7 Mhz */
 
 	irqstate_t flags = px4_enter_critical_section();
@@ -144,11 +149,13 @@ void px4_arch_adc_uninit(uint32_t base_address)
 	irqstate_t flags = px4_enter_critical_section();
 	_REG(KINETIS_SIM_SCGC3) &= ~SIM_SCGC3_ADC1;
 	px4_leave_critical_section(flags);
+
+	px4_sem_destroy(&adc_lock);
 }
 
 uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
 {
-	irqstate_t flags = px4_enter_critical_section();
+	SmartLock smart_lock(adc_lock);
 
 	/* clear any previous COCC */
 	rRA(1);
@@ -161,17 +168,14 @@ uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
 
 	while (!(rSC1A(1) & ADC_SC1_COCO)) {
 
-		/* don't wait for more than 10us, since that means something broke - should reset here if we see this */
-		if ((hrt_absolute_time() - now) > 10) {
-			px4_leave_critical_section(flags);
-			return 0xffff;
+		/* don't wait for more than 1ms, since that means something broke - should reset here if we see this */
+		if ((hrt_absolute_time() - now) > 1000) {
+			return UINT32_MAX;
 		}
 	}
 
 	/* read the result and clear EOC */
 	uint32_t result = rRA(1);
-
-	px4_leave_critical_section(flags);
 
 	return result;
 }

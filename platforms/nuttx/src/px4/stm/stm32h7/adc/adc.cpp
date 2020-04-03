@@ -36,10 +36,10 @@
 #include <drivers/drv_adc.h>
 #include <drivers/drv_hrt.h>
 #include <px4_arch/adc.h>
+#include <px4_platform_common/sem.hpp>
 
 #include <stm32_adc.h>
 #include <stm32_gpio.h>
-
 
 /*
  * Register accessors.
@@ -116,9 +116,12 @@
 #  error "ADC STM32_PLL2P_FREQUENCY too high - no divisor found "
 #endif
 
+px4_sem_t adc_lock;
 
 int px4_arch_adc_init(uint32_t base_address)
 {
+	px4_sem_init(&adc_lock, 0, 1);
+
 	/* Perform ADC init once per ADC */
 
 	static uint32_t once[SYSTEM_ADC_COUNT] {};
@@ -265,12 +268,12 @@ int px4_arch_adc_init(uint32_t base_address)
 
 void px4_arch_adc_uninit(uint32_t base_address)
 {
-	// nothing to do
+	px4_sem_destroy(&adc_lock);
 }
 
 uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
 {
-	irqstate_t flags = px4_enter_critical_section();
+	SmartLock smart_lock(adc_lock);
 
 	/* clear any previous EOC */
 
@@ -289,17 +292,14 @@ uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
 
 	while (!(rISR(base_address) & ADC_INT_EOC)) {
 
-		/* don't wait for more than 50us, since that means something broke - should reset here if we see this */
-		if ((hrt_absolute_time() - now) > 50) {
-			px4_leave_critical_section(flags);
+		/* don't wait for more than 1ms, since that means something broke - should reset here if we see this */
+		if ((hrt_absolute_time() - now) > 1000) {
 			return UINT32_MAX;
 		}
 	}
 
 	/* read the result and clear EOC */
 	uint32_t result = rDR(base_address);
-
-	px4_leave_critical_section(flags);
 
 	return result;
 }

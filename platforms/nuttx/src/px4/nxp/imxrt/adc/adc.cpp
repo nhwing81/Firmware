@@ -45,6 +45,7 @@
 #include <drivers/drv_hrt.h>
 #include <drivers/drv_adc.h>
 #include <px4_arch/adc.h>
+#include <px4_platform_common/sem.hpp>
 
 #include <hardware/imxrt_adc.h>
 #include <imxrt_periphclks.h>
@@ -82,9 +83,12 @@ typedef uint32_t 	adc_chan_t;
 #define rOFS(base_address)  REG(base_address, IMXRT_ADC_OFS_OFFSET)  /* Offset correction value register */
 #define rCAL(base_address)  REG(base_address, IMXRT_ADC_CAL_OFFSET)  /* Calibration value register */
 
+px4_sem_t adc_lock;
 
 int px4_arch_adc_init(uint32_t base_address)
 {
+	px4_sem_init(&adc_lock, 0, 1);
+
 	static bool once = false;
 
 	if (!once) {
@@ -159,10 +163,13 @@ int px4_arch_adc_init(uint32_t base_address)
 void px4_arch_adc_uninit(uint32_t base_address)
 {
 	imxrt_clockoff_adc1();
+
+	px4_sem_destroy(&adc_lock);
 }
 
 uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
 {
+	SmartLock smart_lock(adc_lock);
 
 	/* clear any previous COCO0 */
 
@@ -174,16 +181,14 @@ uint32_t px4_arch_adc_sample(uint32_t base_address, unsigned channel)
 	hrt_abstime now = hrt_absolute_time();
 
 	while (!(rHS(base_address) & ADC_HS_COCO0)) {
-		/* don't wait for more than 50us, since that means something broke
-		 *  should reset here if we see this
-		 */
-		if ((hrt_absolute_time() - now) > 50) {
-			return 0xffff;
+		/* don't wait for more than 1ms, since that means something broke - should reset here if we see this */
+		if ((hrt_absolute_time() - now) > 1000) {
+			return UINT32_MAX;
 		}
 	}
 
 	/* read the result and clear  COCO0 */
-	result  = rR0(base_address);
+	result = rR0(base_address);
 	return result;
 }
 
